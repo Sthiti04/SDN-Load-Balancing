@@ -119,12 +119,14 @@ Expected output: `Python 3.10.x` or higher
 
 Ryu is the OpenFlow controller framework.
 
-### Create Project Directory
+### Navigate to Project Directory
 
 ```bash
-mkdir -p ~/sthiti-sdn-lb
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
+# Or wherever you cloned this repository
 ```
+
+**Note:** Each user must create their own virtual environment. The `venv/` directory is intentionally excluded from git.
 
 ### Create Virtual Environment
 
@@ -153,7 +155,7 @@ sed -i '36,37d' ryu/hooks.py
 ### Install Ryu
 
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 source venv/bin/activate
 pip install --upgrade pip
 pip install "setuptools<58"
@@ -179,13 +181,15 @@ Expected output: `ryu-manager 4.34`
 
 ## Step 6: Download Project Files
 
-### Option A: If You Have Git Repository
+### Clone the Repository
 
 ```bash
-cd ~/sthiti-sdn-lb
-# Clone your repository here
-git clone <your-repo-url> .
+cd ~
+git clone https://github.com/Sthiti04/SDN-Load-Balancing.git
+cd SDN-Load-Balancing
 ```
+
+**Important:** After cloning, you must create a virtual environment as venv/ is not included in the repository.
 
 ### Option B: Manual File Creation
 
@@ -206,7 +210,7 @@ Required files:
 ### Run the Test Script
 
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 chmod +x test_setup.sh
 ./test_setup.sh
 ```
@@ -231,7 +235,7 @@ sudo mn -c
 #### Terminal 1: Start the Topology
 
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 sudo python3 topo.py
 ```
 
@@ -251,7 +255,7 @@ mininet>
 In a new terminal:
 
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 source venv/bin/activate
 ryu-manager static_select.py
 ```
@@ -319,7 +323,7 @@ sudo mn -c
 
 ### Activate Virtual Environment
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 source venv/bin/activate
 ```
 
@@ -335,13 +339,13 @@ sudo mn -c
 
 ### Check Ryu Version
 ```bash
-source ~/sthiti-sdn-lb/venv/bin/activate
+source /home/thread/SDN-Load-Balancing/venv/bin/activate
 ryu-manager --version
 ```
 
 ### Run Test Script
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 ./test_setup.sh
 ```
 
@@ -418,11 +422,11 @@ sudo killall ryu-manager
 
 **Solution:** Recreate it:
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 rm -rf venv
 python3 -m venv venv
 source venv/bin/activate
-# Re-run Step 5
+# Re-run Step 5 (Ryu installation)
 ```
 
 ---

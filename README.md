@@ -2,6 +2,15 @@
 
 OpenFlow-based load balancing implementation using Ryu SDN controller and Mininet.
 
+## ⚠️ Important: Virtual Environment
+
+**The `venv/` directory is NOT included in this repository.** Each user must create their own virtual environment using the `install.sh` script or by following the [Installation Guide](INSTALLATION_GUIDE.md).
+
+This is intentional because virtual environments:
+- Are machine-specific with absolute paths
+- Don't work across different systems
+- Should never be committed to version control
+
 ## 📚 Documentation
 
 - **[Quick Start Guide](QUICKSTART.md)** - Get running in 5 minutes ⚡
@@ -9,45 +18,59 @@ OpenFlow-based load balancing implementation using Ryu SDN controller and Minine
 - **[Architecture Overview](ARCHITECTURE.md)** - System design and diagrams 🏗️
 - **[Troubleshooting Guide](TROUBLESHOOTING.md)** - Common issues & solutions 🔧
 - **[Setup Instructions](SETUP_INSTRUCTIONS.md)** - Configuration and usage details ⚙️
+- **[Performance Results](PERFORMANCE_RESULTS.md)** - Test metrics and benchmarks 📊
 
 ## 🚀 Quick Start
 
-### Automated Installation
+### Option 1: Automated Installation (Recommended)
 
 ```bash
-# Download and run the installer
-curl -O https://raw.githubusercontent.com/Sthiti04/SDN-Load-Balancing/main/install.sh
+# Clone the repository
+git clone https://github.com/Sthiti04/SDN-Load-Balancing.git
+cd SDN-Load-Balancing
+
+# Run the automated installer
 chmod +x install.sh
 ./install.sh
 ```
 
-### Manual Installation
+### Option 2: Manual Installation
 
 ```bash
-# Install prerequisites
-sudo apt install -y mininet openvswitch-switch python3 python3-venv
+# Clone repository
+git clone https://github.com/Sthiti04/SDN-Load-Balancing.git
+cd SDN-Load-Balancing
 
-# Set up project
-mkdir -p ~/sthiti-sdn-lb
-cd ~/sthiti-sdn-lb
+# Install prerequisites
+sudo apt install -y mininet openvswitch-switch python3 python3-venv build-essential
+
+# Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
 
-# Install Ryu (see INSTALLATION_GUIDE.md for Python 3.12+ fix)
-pip install ryu
+# Install Ryu with Python 3.12+ compatibility fix
+cd /tmp
+git clone https://github.com/faucetsdn/ryu.git
+cd ryu
+sed -i '36,37d' ryu/hooks.py
+cd ~/SDN-Load-Balancing
+source venv/bin/activate
+pip install "setuptools<58"
+cd /tmp/ryu && pip install .
+pip install --upgrade eventlet "dnspython>=2.0.0" setuptools==74.0.0
 ```
 
 ## 🎮 Running the System
 
 ### Terminal 1: Start Topology
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 sudo python3 topo.py
 ```
 
 ### Terminal 2: Start Controller
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 source venv/bin/activate
 ryu-manager static_select.py
 ```
@@ -68,10 +91,15 @@ ryu-manager static_select.py
 # Run setup verification
 ./test_setup.sh
 
+# Run automated performance tests
+sudo python3 test_automated.py
+
 # In Mininet CLI
 mininet> pingall
 mininet> h1 ping h2
 ```
+
+See [PERFORMANCE_RESULTS.md](PERFORMANCE_RESULTS.md) for detailed test results.
 
 ## 📊 Network Topology
 
@@ -87,6 +115,15 @@ mininet> h1 ping h2
 - Mininet 2.3.0+
 - Ryu SDN Framework 4.34
 - Open vSwitch
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create your feature branch
+3. **Do NOT commit venv/** (already in .gitignore)
+4. Commit your changes
+5. Push to the branch
+6. Create a Pull Request
 
 ## 📖 For More Information
 

@@ -22,7 +22,7 @@
 Before running the full system, verify everything is set up correctly:
 
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 ./test_setup.sh
 ```
 
@@ -34,13 +34,13 @@ This will check all dependencies and controller files for errors.
 
 **Terminal 1 - Start the Mininet Topology:**
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 sudo python3 topo.py
 ```
 
 **Terminal 2 - Start a Controller:**
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 source venv/bin/activate
 ryu-manager static_select.py
 # OR any other controller:
@@ -54,13 +54,13 @@ ryu-manager static_select.py
 
 **Terminal 1 - Topology:**
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 sudo python3 topo.py
 ```
 
 **Terminal 2 - Controller:**
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 ./run_controller.sh static_select.py
 ```
 
@@ -112,11 +112,13 @@ source venv/bin/activate
 
 ## Virtual Environment
 
-The virtual environment is located at `~/sthiti-sdn-lb/venv/`
+The virtual environment is located at `/home/thread/SDN-Load-Balancing/venv/`
+
+**Important:** Each user must create their own virtual environment. The venv/ directory is not included in the git repository.
 
 To activate it:
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 source venv/bin/activate
 ```
 

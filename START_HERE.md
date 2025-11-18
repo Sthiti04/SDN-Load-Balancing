@@ -72,11 +72,11 @@ chmod +x install.sh
 ### Every Time You Run
 ```bash
 # Terminal 1
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 sudo python3 topo.py
 
 # Terminal 2
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 source venv/bin/activate
 ryu-manager static_select.py
 ```

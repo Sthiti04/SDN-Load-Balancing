@@ -11,9 +11,9 @@
 sudo apt update
 sudo apt install -y mininet openvswitch-switch python3 python3-venv git build-essential
 
-# 2. Create project directory
-mkdir -p ~/sthiti-sdn-lb
-cd ~/sthiti-sdn-lb
+# 2. Clone the repository
+git clone https://github.com/Sthiti04/SDN-Load-Balancing.git
+cd SDN-Load-Balancing
 
 # 3. Create virtual environment
 python3 -m venv venv
@@ -33,7 +33,7 @@ pip install --upgrade eventlet "dnspython>=2.0.0" setuptools==74.0.0
 # 5. Clone/copy your project files to ~/sthiti-sdn-lb/
 
 # 6. Verify setup
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 ./test_setup.sh
 ```
 
@@ -45,13 +45,13 @@ cd ~/sthiti-sdn-lb
 
 **Terminal 1:**
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 sudo python3 topo.py
 ```
 
 **Terminal 2:**
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 source venv/bin/activate
 ryu-manager static_select.py  # or any other controller
 ```

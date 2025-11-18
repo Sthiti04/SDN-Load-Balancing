@@ -52,6 +52,11 @@ if [ "$EUID" -eq 0 ]; then
     exit 1
 fi
 
+# Determine project directory (where this script is located)
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+print_info "Installing in directory: $PROJECT_DIR"
+echo ""
+
 # Step 1: Update system
 print_info "Step 1/7: Updating system packages..."
 sudo apt update -qq
@@ -102,14 +107,12 @@ echo ""
 
 # Step 5: Create virtual environment
 print_info "Step 5/7: Setting up Python virtual environment..."
-PROJECT_DIR="$HOME/sthiti-sdn-lb"
 
 if [ -d "$PROJECT_DIR/venv" ]; then
     print_info "Virtual environment already exists, recreating..."
     rm -rf "$PROJECT_DIR/venv"
 fi
 
-mkdir -p "$PROJECT_DIR"
 cd "$PROJECT_DIR"
 python3 -m venv venv
 source venv/bin/activate
@@ -184,13 +187,7 @@ echo "Project directory: $PROJECT_DIR"
 echo ""
 echo "Next steps:"
 echo ""
-echo "1. Copy your project files to: $PROJECT_DIR"
-echo "   - topo.py"
-echo "   - static_select.py"
-echo "   - static_round_robin.py"
-echo "   - dynamic_least_load.py"
-echo "   - dynamic_dwrs.py"
-echo "   - hybrid.py"
+echo "1. Your virtual environment is ready at: $PROJECT_DIR/venv"
 echo ""
 echo "2. Run the test script:"
 echo "   cd $PROJECT_DIR"

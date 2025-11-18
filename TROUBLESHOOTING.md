@@ -9,7 +9,7 @@ Quick solutions to common issues.
 ### "externally-managed-environment" error
 ```bash
 # Always use virtual environment
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 source venv/bin/activate
 pip install <package>
 ```
@@ -47,7 +47,7 @@ ps aux | grep ryu-manager
 sudo netstat -tulpn | grep 6653
 
 # 3. Start Ryu controller if not running
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 source venv/bin/activate
 ryu-manager static_select.py
 ```
@@ -116,14 +116,14 @@ sudo killall ryu-manager
 sudo /usr/share/openvswitch/scripts/ovs-ctl restart
 
 # Restart
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 sudo python3 topo.py  # Terminal 1
 source venv/bin/activate && ryu-manager static_select.py  # Terminal 2
 ```
 
 ### Recreate virtual environment
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 rm -rf venv
 python3 -m venv venv
 source venv/bin/activate
@@ -156,7 +156,7 @@ sudo ovs-ofctl show s1
 
 ### Check Ryu installation
 ```bash
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 source venv/bin/activate
 ryu-manager --version
 which ryu-manager
@@ -196,7 +196,7 @@ sudo /usr/share/openvswitch/scripts/ovs-ctl restart
 sudo ovs-vsctl show  # Should show empty
 
 # 4. Recreate venv if needed
-cd ~/sthiti-sdn-lb
+cd /home/thread/SDN-Load-Balancing
 rm -rf venv
 python3 -m venv venv
 source venv/bin/activate
@@ -213,7 +213,7 @@ source venv/bin/activate && ryu-manager static_select.py  # Terminal 2
 
 1. Check all prerequisites are installed: `./test_setup.sh`
 2. Review the [Installation Guide](INSTALLATION_GUIDE.md)
-3. Make sure you're in the right directory: `cd ~/sthiti-sdn-lb`
+3. Make sure you're in the right directory: `cd /home/thread/SDN-Load-Balancing`
 4. Verify Python version: `python3 --version` (should be 3.10+)
 5. Check system logs: `journalctl -xe | grep ovs`
 
