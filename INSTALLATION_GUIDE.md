@@ -220,6 +220,23 @@ You should see:
 ✅ All checks passed!
 ```
 
+### Run Performance Tests
+
+Available test scripts:
+- **test_setup.sh** - Verifies installation and dependencies
+- **test_basic.py** - Basic performance test with interactive CLI
+- **test_automated.py** - Comprehensive automated tests (no controller needed)
+- **test_hybrid_performance.py** - Full test suite for Ryu controllers
+
+```bash
+# Quick automated test (no controller needed)
+sudo python3 test_automated.py
+
+# Test with controller (start controller first in another terminal)
+# Terminal 1: source venv/bin/activate && ryu-manager static_select.py
+# Terminal 2: sudo python3 test_hybrid_performance.py
+```
+
 ### Clean Any Previous Mininet State
 
 ```bash

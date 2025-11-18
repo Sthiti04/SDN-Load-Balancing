@@ -52,6 +52,20 @@ source venv/bin/activate
 ryu-manager static_select.py
 ```
 
+### Verify System is Working
+
+```bash
+# Check installation
+./test_setup.sh
+
+# Run automated tests (no controller needed)
+sudo python3 test_automated.py
+
+# Test with Ryu controller
+# Terminal 1: source venv/bin/activate && ryu-manager static_select.py
+# Terminal 2: sudo python3 test_hybrid_performance.py
+```
+
 ### "Address already in use"
 ```bash
 # Clean up existing processes

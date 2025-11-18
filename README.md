@@ -82,16 +82,33 @@ ryu-manager static_select.py
 
 ## 🧪 Testing
 
+### Automated Testing Scripts
+
+Three test scripts are available for different scenarios:
+
 ```bash
-# Run setup verification
+# 1. Verify installation and dependencies
 ./test_setup.sh
 
-# Run automated performance tests
+# 2. Basic performance test (no controller required)
+#    Tests: connectivity, latency, TCP/UDP throughput with OVS controller
+sudo python3 test_basic.py
+
+# 3. Automated performance test (no controller required)
+#    Comprehensive tests without manual interaction
 sudo python3 test_automated.py
 
-# In Mininet CLI
+# 4. Test with Ryu controller (start controller first)
+#    Terminal 1: source venv/bin/activate && ryu-manager hybrid.py
+#    Terminal 2: sudo python3 test_hybrid_performance.py
+```
+
+### Manual Testing in Mininet CLI
+
+```bash
 mininet> pingall
 mininet> h1 ping h2
+mininet> iperf h1 h2
 ```
 
 See [PERFORMANCE_RESULTS.md](PERFORMANCE_RESULTS.md) for detailed test results.

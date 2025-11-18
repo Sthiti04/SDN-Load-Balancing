@@ -66,6 +66,19 @@ mininet> pingall
 mininet> h1 ping h2
 ```
 
+### Automated Testing
+```bash
+# Exit Mininet (Ctrl+D), then:
+sudo mn -c  # cleanup
+
+# Run automated tests (no controller needed):
+sudo python3 test_automated.py
+
+# Or test with your controller:
+# Terminal 1: source venv/bin/activate && ryu-manager static_select.py
+# Terminal 2: sudo python3 test_hybrid_performance.py
+```
+
 ---
 
 ## 🛑 Stopping
