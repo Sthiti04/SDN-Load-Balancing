@@ -17,7 +17,6 @@ This is intentional because virtual environments:
 - **[Complete Installation Guide](INSTALLATION_GUIDE.md)** - Detailed setup instructions 📖
 - **[Architecture Overview](ARCHITECTURE.md)** - System design and diagrams 🏗️
 - **[Troubleshooting Guide](TROUBLESHOOTING.md)** - Common issues & solutions 🔧
-- **[Setup Instructions](SETUP_INSTRUCTIONS.md)** - Configuration and usage details ⚙️
 - **[Performance Results](PERFORMANCE_RESULTS.md)** - Test metrics and benchmarks 📊
 
 ## 🚀 Quick Start
@@ -53,24 +52,20 @@ cd /tmp
 git clone https://github.com/faucetsdn/ryu.git
 cd ryu
 sed -i '36,37d' ryu/hooks.py
-cd ~/SDN-Load-Balancing
-source venv/bin/activate
 pip install "setuptools<58"
-cd /tmp/ryu && pip install .
-pip install --upgrade eventlet "dnspython>=2.0.0" setuptools==74.0.0
+pip install .
+pip install --upgrade eventlet==0.40.3 "dnspython>=2.0.0" setuptools==74.0.0
 ```
 
 ## 🎮 Running the System
 
 ### Terminal 1: Start Topology
 ```bash
-cd /home/thread/SDN-Load-Balancing
 sudo python3 topo.py
 ```
 
 ### Terminal 2: Start Controller
 ```bash
-cd /home/thread/SDN-Load-Balancing
 source venv/bin/activate
 ryu-manager static_select.py
 ```
