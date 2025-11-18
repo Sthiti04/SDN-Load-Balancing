@@ -1,6 +1,6 @@
 from mininet.topo import Topo
 from mininet.net import Mininet
-from mininet.node import Controller
+from mininet.node import RemoteController
 from mininet.cli import CLI
 from mininet.log import setLogLevel
 
@@ -24,8 +24,9 @@ class LoadBalancerTopo(Topo):
 if __name__ == '__main__':
     setLogLevel('info')
     topo = LoadBalancerTopo()
-    net = Mininet(topo=topo, controller=Controller)
+    net = Mininet(topo=topo, controller=RemoteController)
     net.start()
     print("Custom topology with 1 client and 4 server hosts")
+    print("Waiting for remote controller on localhost:6653...")
     CLI(net)
     net.stop()
