@@ -1,0 +1,31 @@
+from mininet.topo import Topo
+from mininet.net import Mininet
+from mininet.node import Controller
+from mininet.cli import CLI
+from mininet.log import setLogLevel
+
+class LoadBalancerTopo(Topo):
+    def build(self):
+        # Add switch
+        switch = self.addSwitch('s1')
+        
+        # Add 1 client
+        client = self.addHost('h1',ip='10.0.0.1/24')
+
+        # Add 4 server hosts
+        server_ips = ['10.0.0.2','10.0.0.3','10.0.0.4','10.0.0.5']
+        for i, ip in enumerate(server_ips, start=2):
+            server = self.addHost(f'h{i}', ip=f'{ip}/24')
+            self.addLink(server, switch)
+
+        # Connect client to switch
+        self.addLink(client, switch)
+
+if __name__ == '__main__':
+    setLogLevel('info')
+    topo = LoadBalancerTopo()
+    net = Mininet(topo=topo, controller=Controller)
+    net.start()
+    print("Custom topology with 1 client and 4 server hosts")
+    CLI(net)
+    net.stop()
