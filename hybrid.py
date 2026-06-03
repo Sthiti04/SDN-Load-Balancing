@@ -1,334 +1,255 @@
-"""
-Hybrid Load Balancing with Failover (Paper-Accurate Version)
--------------------------------------------------------------
-Static Method  = SELECT GROUP + Fast Failover (Section 4.2)
-Dynamic Method = Improved DWRS + Binary Search (Section 4.3)
-Switching Rule = Load Imbalance δ = Variance(loads) (Section 4.4)
-
-- When δ < threshold  → STATIC mode
-- When δ ≥ threshold → DYNAMIC mode
-
-Implements Algorithm-1:
-Binary Search on cumulative serviceability list s[1..n]
-"""
-
 from ryu.base import app_manager
 from ryu.controller import ofp_event
-from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, set_ev_cls
+from ryu.controller.handler import MAIN_DISPATCHER, CONFIG_DISPATCHER, set_ev_cls
 from ryu.ofproto import ofproto_v1_3
-from ryu.lib.packet import packet, ethernet, arp, ipv4, tcp
-from ryu.topology import event
-import statistics, random
+from ryu.lib.packet import packet, ethernet, arp, ipv4
+from ryu.lib import hub
+import random
+import statistics
+import time
 
+VIP = '10.0.0.100'
+VIP_MAC = '00:00:00:00:00:FE'
+CLIENT_IP = '10.0.0.1'
+SERVER_IPS = ['10.0.0.2', '10.0.0.3', '10.0.0.4', '10.0.0.5']
 
-class HybridDWRS_Binary(app_manager.RyuApp):
-    OFP_VERSION = [ofproto_v1_3.OFP_VERSION]
+DEFAULT_WEIGHTS = [1, 1, 1, 1]
+MONITOR_INTERVAL = 5.0
+FLOW_IDLE_TIMEOUT = 30
+LOAD_THRESHOLD = 0.5
 
-    # -----------------------------------------------------
-    # CONFIG
-    # -----------------------------------------------------
-    VIP = "10.0.0.100"
-    VIP_MAC = "AA:BB:CC:DD:EE:FF"
-    THRESHOLD = 15  # δ threshold for switching
+class HybridDWRS(app_manager.RyuApp):
+    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
-    SERVERS = [
-        {"ip": "10.0.0.2", "mac": "00:00:00:00:00:02", "port": 2},
-        {"ip": "10.0.0.3", "mac": "00:00:00:00:00:03", "port": 3},
-        {"ip": "10.0.0.4", "mac": "00:00:00:00:00:04", "port": 4},
-        {"ip": "10.0.0.5", "mac": "00:00:00:00:00:05", "port": 5},
-    ]
-
-    MODE_STATIC = 0
-    MODE_DYNAMIC = 1
-
-    # -----------------------------------------------------
-    # INIT
-    # -----------------------------------------------------
     def __init__(self, *args, **kwargs):
-        super(HybridDWRS_Binary, self).__init__(*args, **kwargs)
+        super(HybridDWRS, self).__init__(*args, **kwargs)
+        self.datapaths = {}            # dpid -> datapath
+        self.mac_to_port = {}          # dpid -> { mac: port }
+        self.ip_to_port = {}           # ip -> port (learned)
+        self.ip_to_mac = {}            # ip -> mac  (learned)
+        self.weights = list(DEFAULT_WEIGHTS)
+        self.cum_weights = self._build_cumulative(self.weights)
+        self.method = 'static'         # 'static' or 'dynamic'
+        self.server_loads = [0.0 for _ in SERVER_IPS]
+        self.monitor_thread = hub.spawn(self._monitor)
 
-        self.mode = self.MODE_STATIC
-        self.dp = None
+    # ---------------- helpers ----------------
+    def _build_cumulative(self, weights):
+        cum = []
+        s = 0
+        for w in weights:
+            s += w
+            cum.append(s)
+        return cum
 
-        # for DWRS
-        self.loads = {s["ip"]: 1 for s in self.SERVERS}
-        self.cumulative = []  # s[1..n] list from paper
-        self.total_serviceability = 0
-
-        self.server_ips = [s["ip"] for s in self.SERVERS]
-        self.ff_group = {}  # failover group table per server
-
-        self.update_cumulative_list()
-
-    # -----------------------------------------------------
-    # SERVICEABILITY + CUMULATIVE LIST (From Paper Section 4.3)
-    # -----------------------------------------------------
-    def update_cumulative_list(self):
-        """
-        serviceability = 1 / load
-        s[i] = cumulative sum list (Algorithm-1)
-        """
-        running = 0
-        self.cumulative = []
-
-        for s in self.SERVERS:
-            ip = s["ip"]
-            serviceability = max(1, int(10 / self.loads[ip]))
-            running += serviceability
-            self.cumulative.append(running)
-
-        self.total_serviceability = running
-
-    # -----------------------------------------------------
-    # Algorithm-1: Binary Search in DWRS
-    # -----------------------------------------------------
-    def dwrs_binary_search(self):
-        """
-        Implements EXACT pseudo-code:
-
-        lw=1; up=n;
-        while lw+1<up:
-            mid=(lw+up)/2
-            if r <= s[mid] then up=mid else lw=mid
-        ts=up
-        """
-        r = random.randint(1, self.total_serviceability)
-
-        lw = 0
-        up = len(self.cumulative) - 1
-
+    def _pick_server_index(self):
+        total = self.cum_weights[-1]
+        r = random.random() * total
+        lw = -1
+        up = len(self.cum_weights) - 1
         while lw + 1 < up:
             mid = (lw + up) // 2
-            if r <= self.cumulative[mid]:
+            if r <= self.cum_weights[mid]:
                 up = mid
             else:
                 lw = mid
+        return up
 
-        return up  # index of selected server
+    def _add_flow(self, datapath, priority, match, actions, idle_timeout=0):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
+                                match=match, instructions=inst,
+                                idle_timeout=idle_timeout)
+        datapath.send_msg(mod)
 
-    # -----------------------------------------------------
-    # SWITCHING LOGIC — δ = Variance(loads)
-    # -----------------------------------------------------
-    def compute_delta(self):
-        return statistics.pvariance(list(self.loads.values()))
+    def _delete_dynamic_flows(self, datapath):
+        parser = datapath.ofproto_parser
+        ofproto = datapath.ofproto
+        # delete flows matching server IPs or client (both directions)
+        for ip in SERVER_IPS + [CLIENT_IP]:
+            match = parser.OFPMatch(eth_type=0x0800, ipv4_dst=ip)
+            mod = parser.OFPFlowMod(datapath=datapath, command=ofproto.OFPFC_DELETE,
+                                    out_port=ofproto.OFPP_ANY, out_group=ofproto.OFPG_ANY,
+                                    match=match)
+            datapath.send_msg(mod)
 
-    def update_mode(self):
-        δ = self.compute_delta()
-
-        if self.mode == self.MODE_STATIC and δ >= self.THRESHOLD:
-            self.logger.info(f"δ={δ} / Switching STATIC → DYNAMIC")
-            self.install_dynamic_mode()
-
-        elif self.mode == self.MODE_DYNAMIC and δ < self.THRESHOLD:
-            self.logger.info(f"δ={δ} / Switching DYNAMIC → STATIC")
-            self.install_static_mode()
-
-    # -----------------------------------------------------
-    # STATIC MODE = SELECT GROUP + FF (Paper Section 4.2)
-    # -----------------------------------------------------
-    def install_static_mode(self):
-        dp = self.dp
-        parser = dp.ofproto_parser
-        ofp = dp.ofproto
-
-        # delete dynamic flows (paper requirement)
-        self.delete_dynamic_flows()
-
-        # ---------- Build FF Groups ----------
-        gid = 200
-        self.ff_group = {}
-
-        for s in self.SERVERS:
-
-            b1 = parser.OFPBucket(
-                watch_port=s["port"],
-                actions=[parser.OFPActionOutput(s["port"])]
-            )
-            b2 = parser.OFPBucket(
-                watch_port=ofp.OFPP_CONTROLLER,
-                actions=[parser.OFPActionOutput(ofp.OFPP_CONTROLLER)]
-            )
-
-            dp.send_msg(parser.OFPGroupMod(
-                dp, ofp.OFPGC_ADD, ofp.OFPGT_FF, gid, [b1, b2]
-            ))
-
-            self.ff_group[s["ip"]] = gid
-            gid += 1
-
-        # ---------- SELECT Group ----------
-        buckets = []
-        for s in self.SERVERS:
-            actions = [
-                parser.OFPActionSetField(ipv4_dst=s["ip"]),
-                parser.OFPActionSetField(eth_dst=s["mac"]),
-                parser.OFPActionGroup(self.ff_group[s["ip"]])
-            ]
-            buckets.append(parser.OFPBucket(actions=actions))
-
-        dp.send_msg(parser.OFPGroupMod(
-            dp, ofp.OFPGC_ADD, ofp.OFPGT_SELECT, 50, buckets
-        ))
-
-        # Forward VIP → SELECT group
-        match = parser.OFPMatch(eth_type=0x0800, ipv4_dst=self.VIP)
-        dp.send_msg(parser.OFPFlowMod(
-            dp, priority=30, match=match,
-            instructions=[parser.OFPInstructionActions(
-                ofp.OFPIT_APPLY_ACTIONS,
-                [parser.OFPActionGroup(50)])]
-        ))
-
-        # Reverse NAT
-        for s in self.SERVERS:
-            match = parser.OFPMatch(eth_type=0x0800, ipv4_src=s["ip"])
-            acts = [
-                parser.OFPActionSetField(ipv4_src=self.VIP),
-                parser.OFPActionSetField(eth_src=self.VIP_MAC),
-                parser.OFPActionOutput(1)
-            ]
-            dp.send_msg(parser.OFPFlowMod(
-                dp, priority=30, match=match,
-                instructions=[parser.OFPInstructionActions(
-                    ofp.OFPIT_APPLY_ACTIONS, acts)]
-            ))
-
-        self.mode = self.MODE_STATIC
-
-    # -----------------------------------------------------
-    # DELETE STATIC MODE (Paper Section 4.4)
-    # -----------------------------------------------------
-    def delete_static_mode(self):
-        dp = self.dp
-        parser = dp.ofproto_parser
-        ofp = dp.ofproto
-
-        # Delete SELECT
-        dp.send_msg(parser.OFPGroupMod(dp, ofp.OFPGC_DELETE,
-                                       ofp.OFPGT_SELECT, 50))
-
-        # Delete VIP→server flows
-        dp.send_msg(parser.OFPFlowMod(
-            dp, command=ofp.OFPFC_DELETE,
-            match=parser.OFPMatch(ipv4_dst=self.VIP)
-        ))
-
-    # -----------------------------------------------------
-    # INSTALL DYNAMIC MODE (DWRS)
-    # -----------------------------------------------------
-    def install_dynamic_mode(self):
-
-        # remove static first (paper requirement)
-        self.delete_static_mode()
-
-        # DWRS operates ONLY through packet-in → no static flows
-        self.mode = self.MODE_DYNAMIC
-
-    # -----------------------------------------------------
-    # DELETE dynamic flows
-    # -----------------------------------------------------
-    def delete_dynamic_flows(self):
-        dp = self.dp
-        parser = dp.ofproto_parser
-        ofp = dp.ofproto
-
-        dp.send_msg(parser.OFPFlowMod(
-            dp, command=ofp.OFPFC_DELETE,
-            match=parser.OFPMatch(ipv4_dst=self.VIP)
-        ))
-
-    # -----------------------------------------------------
-    # SWITCH FEATURES HANDLER
-    # -----------------------------------------------------
+    # ---------------- events ----------------
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
-    def features(self, ev):
-        self.dp = ev.msg.datapath
-        dp = self.dp
-        parser = dp.ofproto_parser
-        ofp = dp.ofproto
+    def switch_features_handler(self, ev):
+        datapath = ev.msg.datapath
+        self.datapaths[datapath.id] = datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
 
-        # intercept ARP
-        match = parser.OFPMatch(eth_type=0x0806, arp_tpa=self.VIP)
-        dp.send_msg(parser.OFPFlowMod(
-            dp, priority=100, match=match,
-            instructions=[parser.OFPInstructionActions(
-                ofp.OFPIT_APPLY_ACTIONS,
-                [parser.OFPActionOutput(ofp.OFPP_CONTROLLER)])]
-        ))
+        # Table-miss: send to controller for learning
+        match = parser.OFPMatch()
+        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+        self._add_flow(datapath, 0, match, actions)
 
-        self.install_static_mode()
+        self.mac_to_port.setdefault(datapath.id, {})
+        self.logger.info("Switch %s connected (table-miss installed)", datapath.id)
 
-    # -----------------------------------------------------
-    # PACKET-IN = only used in DYNAMIC mode
-    # -----------------------------------------------------
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
-    def packetin(self, ev):
-
+    def _packet_in_handler(self, ev):
         msg = ev.msg
-        dp = msg.datapath
-        parser = dp.ofproto_parser
-        ofp = dp.ofproto
+        datapath = msg.datapath
+        dpid = datapath.id
+        parser = datapath.ofproto_parser
+        ofproto = datapath.ofproto
+        in_port = msg.match.get('in_port')
 
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocol(ethernet.ethernet)
+        if eth is None:
+            return
+        # ignore LLDP
+        if eth.ethertype == 0x88cc:
+            return
+
+        # ensure mac table for this dpid
+        self.mac_to_port.setdefault(dpid, {})
+        # Learn L2
+        self.mac_to_port[dpid][eth.src] = in_port
+
+        # ARP handling: learn and optionally reply for VIP
         arp_pkt = pkt.get_protocol(arp.arp)
+        if arp_pkt:
+            # learn ip->mac and ip->port
+            self.ip_to_mac[arp_pkt.src_ip] = arp_pkt.src_mac
+            self.ip_to_port[arp_pkt.src_ip] = in_port
 
-        # ARP reply
-        if arp_pkt and arp_pkt.dst_ip == self.VIP:
-            self.reply_arp(dp, eth, arp_pkt, msg.match["in_port"])
+            if arp_pkt.opcode == arp.ARP_REQUEST and arp_pkt.dst_ip == VIP:
+                # reply to ARP request for VIP with VIP_MAC
+                self._reply_arp(datapath, in_port, arp_pkt.src_mac, arp_pkt.src_ip)
+                return
+            # otherwise do normal ARP forwarding (flood or directed)
+            if arp_pkt.dst_ip in self.ip_to_port:
+                out_port = self.ip_to_port[arp_pkt.dst_ip]
+            else:
+                out_port = ofproto.OFPP_FLOOD
+            actions = [parser.OFPActionOutput(out_port)]
+            out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
+                                      in_port=in_port, actions=actions, data=msg.data)
+            datapath.send_msg(out)
             return
 
-        ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
-        tcp_pkt = pkt.get_protocol(tcp.tcp)
-        if not ipv4_pkt or not tcp_pkt:
-            return
+        # IPv4 handling
+        ip_pkt = pkt.get_protocol(ipv4.ipv4)
+        if ip_pkt:
+            # learn ip->mac and ip->port from IP packet as well
+            self.ip_to_mac[ip_pkt.src] = eth.src
+            self.ip_to_port[ip_pkt.src] = in_port
 
-        # STATIC = hardware does everything
-        if self.mode == self.MODE_STATIC:
-            return
+            # Only intercept traffic destined to VIP
+            if ip_pkt.dst == VIP and ip_pkt.src == CLIENT_IP:
+                # pick server according to current method
+                if self.method == 'dynamic':
+                    idx = self._pick_server_index()
+                else:
+                    # static selection: simple round-robin among servers (or you can use fixed weights)
+                    idx = (int(time.time() / MONITOR_INTERVAL) % len(SERVER_IPS))
+                server_ip = SERVER_IPS[idx]
+                server_port = self.ip_to_port.get(server_ip)
+                server_mac = self.ip_to_mac.get(server_ip)
+                client_port = self.ip_to_port.get(CLIENT_IP)
+                client_mac = self.ip_to_mac.get(CLIENT_IP)
 
-        # --------------------------
-        # DYNAMIC (DWRS Selection)
-        # --------------------------
-        self.update_mode()
-        self.update_cumulative_list()
+                # if server mapping unknown, flood to learn ARP
+                if server_port is None or server_mac is None:
+                    self.logger.debug("Unknown server mapping for %s, flooding to learn", server_ip)
+                    actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+                    out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
+                                              in_port=in_port, actions=actions, data=msg.data)
+                    datapath.send_msg(out)
+                    return
 
-        idx = self.dwrs_binary_search()
-        target = self.SERVERS[idx]
-        ip = target["ip"]
+                self.logger.info("LB (%s): %s -> %s (idx=%d)", self.method, ip_pkt.src, server_ip, idx)
 
-        self.loads[ip] += 1  # update load counters
+                # install forward flow: client->VIP -> rewrite dst and mac, output to server_port
+                match = parser.OFPMatch(eth_type=0x0800, ipv4_src=CLIENT_IP, ipv4_dst=VIP)
+                actions = [
+                    parser.OFPActionSetField(ipv4_dst=server_ip),
+                    parser.OFPActionSetField(eth_dst=server_mac),
+                    parser.OFPActionOutput(server_port)
+                ]
+                self._add_flow(datapath, priority=200, match=match, actions=actions, idle_timeout=FLOW_IDLE_TIMEOUT)
 
-        actions = [
-            parser.OFPActionSetField(ipv4_dst=ip),
-            parser.OFPActionSetField(eth_dst=target["mac"]),
-            parser.OFPActionGroup(self.ff_group[ip])
-        ]
+                # install reverse flow: server->client -> rewrite src IP to VIP and set dst mac to client_mac
+                if client_port is not None and client_mac is not None:
+                    match_r = parser.OFPMatch(eth_type=0x0800, ipv4_src=server_ip, ipv4_dst=CLIENT_IP)
+                    actions_r = [
+                        parser.OFPActionSetField(ipv4_src=VIP),
+                        parser.OFPActionSetField(eth_dst=client_mac),
+                        parser.OFPActionOutput(client_port)
+                    ]
+                    self._add_flow(datapath, priority=200, match=match_r, actions=actions_r, idle_timeout=FLOW_IDLE_TIMEOUT)
+                else:
+                    # fallback reverse flow (flood) if client mapping missing
+                    match_r = parser.OFPMatch(eth_type=0x0800, ipv4_src=server_ip, ipv4_dst=CLIENT_IP)
+                    actions_r = [parser.OFPActionSetField(ipv4_src=VIP), parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+                    self._add_flow(datapath, priority=100, match=match_r, actions=actions_r, idle_timeout=FLOW_IDLE_TIMEOUT)
 
-        dp.send_msg(parser.OFPPacketOut(
-            dp, ofp.OFP_NO_BUFFER,
-            msg.match["in_port"], actions, msg.data
-        ))
+                # forward the current packet
+                actions_pkt = [
+                    parser.OFPActionSetField(ipv4_dst=server_ip),
+                    parser.OFPActionSetField(eth_dst=server_mac),
+                    parser.OFPActionOutput(server_port)
+                ]
+                out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
+                                          in_port=in_port, actions=actions_pkt, data=msg.data)
+                datapath.send_msg(out)
+                return
 
-    # -----------------------------------------------------
-    # ARP
-    # -----------------------------------------------------
-    def reply_arp(self, dp, eth, arp_pkt, port):
+        # Default L2 forwarding for everything else (critical for pingall)
+        dst = eth.dst
+        if dst in self.mac_to_port[dpid]:
+            out_port = self.mac_to_port[dpid][dst]
+        else:
+            out_port = ofproto.OFPP_FLOOD
 
-        parser = dp.ofproto_parser
-        ofp = dp.ofproto
+        actions = [parser.OFPActionOutput(out_port)]
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
+                                  in_port=in_port, actions=actions, data=msg.data)
+        datapath.send_msg(out)
 
+    # ---------------- monitor thread ----------------
+    def _monitor(self):
+        while True:
+            
+            if len(self.server_loads) > 0:
+                avg = statistics.mean(self.server_loads)
+                variance = statistics.variance(self.server_loads) if len(self.server_loads) > 1 else 0.0
+                if variance > LOAD_THRESHOLD and self.method != 'dynamic':
+                    self.method = 'dynamic'
+                    for dp in self.datapaths.values():
+                        self._delete_dynamic_flows(dp)
+                    self.logger.info("Switched to dynamic (variance=%.3f)", variance)
+                elif variance <= LOAD_THRESHOLD and self.method != 'static':
+                    self.method = 'static'
+                    for dp in self.datapaths.values():
+                        self._delete_dynamic_flows(dp)
+                    self.logger.info("Switched to static (variance=%.3f)", variance)
+            hub.sleep(MONITOR_INTERVAL)
+
+    # ---------------- utilities ----------------
+    def _reply_arp(self, datapath, port, dst_mac, dst_ip):
+        parser = datapath.ofproto_parser
+        ofproto = datapath.ofproto
+
+        eth_reply = ethernet.ethernet(dst=dst_mac, src=VIP_MAC, ethertype=0x0806)
+        arp_reply = arp.arp(opcode=arp.ARP_REPLY,
+                            src_mac=VIP_MAC, src_ip=VIP,
+                            dst_mac=dst_mac, dst_ip=dst_ip)
         pkt = packet.Packet()
-        pkt.add_protocol(ethernet.ethernet(
-            dst=eth.src, src=self.VIP_MAC, ethertype=0x0806))
-        pkt.add_protocol(arp.arp(
-            opcode=2, src_mac=self.VIP_MAC, src_ip=self.VIP,
-            dst_mac=arp_pkt.src_mac, dst_ip=arp_pkt.src_ip))
-
+        pkt.add_protocol(eth_reply)
+        pkt.add_protocol(arp_reply)
         pkt.serialize()
 
-        dp.send_msg(parser.OFPPacketOut(
-            dp, ofp.OFP_NO_BUFFER,
-            ofp.OFPP_CONTROLLER,
-            [parser.OFPActionOutput(port)], pkt.data
-        ))
+        actions = [parser.OFPActionOutput(port)]
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=0xffffffff,
+                                  in_port=ofproto.OFPP_CONTROLLER,
+                                  actions=actions, data=pkt.data)
+        datapath.send_msg(out)
+        self.logger.debug("Replied ARP for VIP to %s (port %d)", dst_ip, port)

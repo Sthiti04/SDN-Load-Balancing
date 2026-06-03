@@ -1,176 +1,146 @@
-"""
-STATIC ROUND-ROBIN LOAD BALANCER WITH FAILOVER
------------------------------------------------
-This Ryu controller implements:
-
-- Round robin scheduling (controller-driven)
-- VIP → Real Server NAT
-- Reverse NAT
-- FF group tables (per server) for fast failover
-- ARP responder for VIP
-- No hashing, no dynamic load watching
-"""
-
 from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, set_ev_cls
 from ryu.ofproto import ofproto_v1_3
-from ryu.lib.packet import packet, ethernet, arp, ipv4, tcp
+from ryu.lib.packet import packet, ethernet, arp, ipv4
+from ryu.lib.packet import ether_types
 
+class StaticRRLoadBalancer(app_manager.RyuApp):
+    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
-class StaticRoundRobin(app_manager.RyuApp):
-    OFP_VERSION = [ofproto_v1_3.OFP_VERSION]
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-    # -------- CONFIG --------
-    VIP      = "10.0.0.100"
-    VIP_MAC  = "AA:BB:CC:DD:EE:FF"
-    CLIENT_PORT = 1
+        # VIP for load balancing
+        self.vip_ip = "10.0.0.100"
+        self.vip_mac = "00:00:00:00:00:FE"
 
-    SERVERS = [
-        {"ip": "10.0.0.2", "mac": "00:00:00:00:00:02", "port": 2},
-        {"ip": "10.0.0.3", "mac": "00:00:00:00:00:03", "port": 3},
-        {"ip": "10.0.0.4", "mac": "00:00:00:00:00:04", "port": 4},
-        {"ip": "10.0.0.5", "mac": "00:00:00:00:00:05", "port": 5},
-    ]
+        # Server ports (h2-h5)
+        self.server_ports = [2, 3, 4, 5]
 
-    # Round robin pointer
-    rr_index = 0
+        # Round-robin index
+        self.rr_index = 0
 
-    # Server failover group mapping
-    ff_group = {}
+        # MAC learning table: {dpid: {mac: port}}
+        self.mac_to_port = {}
 
-    # ----------------------------------------------------
-    # SWITCH FEATURES → Install FF groups + ARP handling
-    # ----------------------------------------------------
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
-    def features(self, ev):
+    def switch_features_handler(self, ev):
+        datapath = ev.msg.datapath
+        ofp = datapath.ofproto
+        parser = datapath.ofproto_parser
 
-        self.dp = ev.msg.datapath
-        dp = self.dp
-        parser = dp.ofproto_parser
-        ofp = dp.ofproto
+        # Install table-miss flow
+        match = parser.OFPMatch()
+        actions = [parser.OFPActionOutput(ofp.OFPP_CONTROLLER,
+                                          ofp.OFPCML_NO_BUFFER)]
+        inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
+        mod = parser.OFPFlowMod(datapath=datapath,
+                                priority=0,
+                                match=match,
+                                instructions=inst)
+        datapath.send_msg(mod)
 
-        self.logger.info("Installing STATIC ROUND ROBIN LB with FAST FAILOVER")
+        self.logger.info("Switch table-miss flow installed")
 
-        # ------------- 1. ARP for VIP ---------------
-        match = parser.OFPMatch(eth_type=0x806, arp_tpa=self.VIP)
-        dp.send_msg(parser.OFPFlowMod(
-            dp, priority=200, match=match,
-            instructions=[parser.OFPInstructionActions(
-                ofp.OFPIT_APPLY_ACTIONS,
-                [parser.OFPActionOutput(ofp.OFPP_CONTROLLER)])]
-        ))
-
-        # ------------- 2. Install FF Groups ----------
-        gid = 100
-        for srv in self.SERVERS:
-
-            # primary output bucket
-            p_bucket = parser.OFPBucket(
-                watch_port=srv["port"],
-                actions=[parser.OFPActionOutput(srv["port"])]
-            )
-
-            # fallback bucket: send to controller for rerouting
-            b_bucket = parser.OFPBucket(
-                watch_port=ofp.OFPP_CONTROLLER,
-                actions=[parser.OFPActionOutput(ofp.OFPP_CONTROLLER)]
-            )
-
-            dp.send_msg(parser.OFPGroupMod(
-                dp, ofp.OFPGC_ADD, ofp.OFPGT_FF, gid,
-                [p_bucket, b_bucket]
-            ))
-
-            self.ff_group[srv["ip"]] = gid
-            gid += 1
-
-        # No forwarding flow here — RR done via controller in packet-in
-
-    # ----------------------------------------------------
-    # PACKET-IN HANDLING (RR scheduling)
-    # ----------------------------------------------------
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
-    def packet_in(self, ev):
-
+    def packet_in_handler(self, ev):
         msg = ev.msg
-        dp = msg.datapath
-        parser = dp.ofproto_parser
-        ofp = dp.ofproto
+        datapath = msg.datapath
+        ofp = datapath.ofproto
+        parser = datapath.ofproto_parser
+        in_port = msg.match['in_port']
 
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocol(ethernet.ethernet)
+
+        # Ignore LLDP
+        if eth.ethertype == ether_types.ETH_TYPE_LLDP:
+            return
+
+        dpid = datapath.id
+        self.mac_to_port.setdefault(dpid, {})
+
+        # Learn MAC of the source
+        self.mac_to_port[dpid][eth.src] = in_port
+
+        # Handle ARP
         arp_pkt = pkt.get_protocol(arp.arp)
-
-        # ------------- ARP ---------------
-        if arp_pkt and arp_pkt.dst_ip == self.VIP:
-            self.reply_arp(dp, eth, arp_pkt, msg.match["in_port"])
+        if arp_pkt:
+            self.handle_arp(datapath, in_port, eth, arp_pkt, msg)
             return
 
-        ip = pkt.get_protocol(ipv4.ipv4)
-        tcp_pkt = pkt.get_protocol(tcp.tcp)
-        if not ip or not tcp_pkt:
+        # Handle IPv4 traffic to VIP (round-robin)
+        ip_pkt = pkt.get_protocol(ipv4.ipv4)
+        if ip_pkt and ip_pkt.dst == self.vip_ip and in_port == 1:  # client port
+            self.handle_rr(datapath, msg)
             return
 
-        # ---------- REQUEST PATH: VIP → SERVER ----------
-        if ip.dst == self.VIP:
+        # Normal L2 switching for all other traffic
+        out_port = self.mac_to_port[dpid].get(eth.dst, ofp.OFPP_FLOOD)
+        actions = [parser.OFPActionOutput(out_port)]
+        out = parser.OFPPacketOut(datapath=datapath,
+                                  buffer_id=msg.buffer_id,
+                                  in_port=in_port,
+                                  actions=actions,
+                                  data=msg.data)
+        datapath.send_msg(out)
 
-            # Pick next server using RR pointer
-            server = self.SERVERS[self.rr_index]
-            self.rr_index = (self.rr_index + 1) % len(self.SERVERS)
+    def handle_arp(self, datapath, in_port, eth, arp_pkt, msg):
+        parser = datapath.ofproto_parser
+        ofp = datapath.ofproto
 
-            self.logger.info(f"RR picked server {server['ip']}")
+        # ARP request for VIP
+        if arp_pkt.opcode == arp.ARP_REQUEST and arp_pkt.dst_ip == self.vip_ip:
+            reply = packet.Packet()
+            reply.add_protocol(
+                ethernet.ethernet(
+                    src=self.vip_mac,
+                    dst=eth.src,
+                    ethertype=ether_types.ETH_TYPE_ARP
+                )
+            )
+            reply.add_protocol(
+                arp.arp(
+                    opcode=arp.ARP_REPLY,
+                    src_mac=self.vip_mac,
+                    src_ip=self.vip_ip,
+                    dst_mac=eth.src,
+                    dst_ip=arp_pkt.src_ip
+                )
+            )
+            reply.serialize()
+            actions = [parser.OFPActionOutput(in_port)]
+            out = parser.OFPPacketOut(datapath=datapath,
+                                      buffer_id=ofp.OFP_NO_BUFFER,
+                                      in_port=ofp.OFPP_CONTROLLER,
+                                      actions=actions,
+                                      data=reply.data)
+            datapath.send_msg(out)
+        else:
+            # Flood other ARP packets
+            out_port = ofp.OFPP_FLOOD
+            actions = [parser.OFPActionOutput(out_port)]
+            out = parser.OFPPacketOut(datapath=datapath,
+                                      buffer_id=ofp.OFP_NO_BUFFER,
+                                      in_port=in_port,
+                                      actions=actions,
+                                      data=msg.data)
+            datapath.send_msg(out)
 
-            # NAT translation + FF group for reliability
-            actions = [
-                parser.OFPActionSetField(ipv4_dst=server["ip"]),
-                parser.OFPActionSetField(eth_dst=server["mac"]),
-                parser.OFPActionGroup(self.ff_group[server["ip"]])
-            ]
+    def handle_rr(self, datapath, msg):
+        parser = datapath.ofproto_parser
+        ofp = datapath.ofproto
 
-            dp.send_msg(parser.OFPPacketOut(
-                dp, ofp.OFP_NO_BUFFER,
-                msg.match["in_port"], actions, msg.data
-            ))
+        # Pick next server in round robin
+        server_port = self.server_ports[self.rr_index]
+        self.rr_index = (self.rr_index + 1) % len(self.server_ports)
 
-            return
-
-        # ---------- RESPONSE PATH: SERVER → CLIENT ----------
-        for srv in self.SERVERS:
-            if ip.src == srv["ip"]:
-
-                actions = [
-                    parser.OFPActionSetField(ipv4_src=self.VIP),
-                    parser.OFPActionSetField(eth_src=self.VIP_MAC),
-                    parser.OFPActionOutput(self.CLIENT_PORT)
-                ]
-
-                dp.send_msg(parser.OFPPacketOut(
-                    dp, ofp.OFP_NO_BUFFER,
-                    msg.match["in_port"], actions, msg.data
-                ))
-
-                return
-
-    # ----------------------------------------------------
-    # VIP ARP REPLY
-    # ----------------------------------------------------
-    def reply_arp(self, dp, eth, a, port):
-
-        parser = dp.ofproto_parser
-        ofp = dp.ofproto
-
-        pkt = packet.Packet()
-        pkt.add_protocol(ethernet.ethernet(
-            dst=eth.src, src=self.VIP_MAC, ethertype=0x0806))
-        pkt.add_protocol(arp.arp(
-            opcode=2, src_mac=self.VIP_MAC, src_ip=self.VIP,
-            dst_mac=a.src_mac, dst_ip=a.src_ip))
-        pkt.serialize()
-
-        dp.send_msg(parser.OFPPacketOut(
-            dp, ofp.OFP_NO_BUFFER,
-            ofp.OFPP_CONTROLLER,
-            [parser.OFPActionOutput(port)],
-            pkt.data
-        ))
+        # Forward the packet to the selected server
+        actions = [parser.OFPActionOutput(server_port)]
+        out = parser.OFPPacketOut(datapath=datapath,
+                                  buffer_id=msg.buffer_id,
+                                  in_port=msg.match['in_port'],
+                                  actions=actions,
+                                  data=msg.data)
+        datapath.send_msg(out)
